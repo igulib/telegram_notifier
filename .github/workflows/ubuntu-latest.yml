@@ -24,7 +24,7 @@ jobs:
 
     - name: Test with coverage
       run:
-          go test -race -coverprofile=coverage.out -covermode=atomic  ./...
+          BOT_TOKEN=${{ secrets.TEST_TELEGRAM_BOT_TOKEN }} CHAT_IDS=${{ secrets.TEST_TELEGRAM_CHAT_IDS }} go test -v -race -coverprofile=coverage.out -covermode=atomic  ./...
 
     - name: Process golang coverage data
       run: |
