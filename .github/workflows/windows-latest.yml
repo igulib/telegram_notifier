@@ -1,0 +1,26 @@
+name: Windows-latest
+
+on: [push, pull_request]
+
+jobs:
+
+  test:
+  
+    strategy:
+      matrix:
+        go-version: ['stable']
+    runs-on: windows-latest
+    steps:
+    - name: Install Go
+      uses: actions/setup-go@v4
+      with:
+        go-version: ${{ matrix.go-version }}
+
+    - name: Checkout code
+      uses: actions/checkout@v3
+
+    - name: Install dependencies
+      run:  go get -t github.com/igulib/telegram_notifier
+
+    - name: Test
+      run: go test -v -race ./...
