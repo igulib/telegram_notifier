@@ -15,7 +15,6 @@ import (
 
 	"github.com/igulib/app"
 	"github.com/rs/zerolog"
-	"github.com/rs/zerolog/log"
 
 	"github.com/nikoksr/notify"
 	"github.com/nikoksr/notify/service/telegram"
@@ -27,9 +26,9 @@ var (
 	// to send a telegram message.
 	DefaultSendTimeoutSec = 5
 
+	// DefaultMsgBufSize is the default message buffer size for
+	// TelegramMessage channel.
 	DefaultMsgBufSize = 50
-
-	DefaultMsgCaption = "Log Message"
 )
 
 // Errors
@@ -62,9 +61,10 @@ var (
 )
 
 type Config struct {
+	// BotToken specifies the Telegram bot secret token.
 	BotToken string `yaml:"bot_token" json:"bot_token"`
 
-	// BotTokenEnvVar defines the name of the environment variable
+	// BotTokenEnvVar specifies the name of the environment variable
 	// that contains BotToken for current telegram notifier.
 	// This allows for more versatile and secure configuration.
 	// The environment variable has precedence over the BotToken value.
@@ -73,35 +73,40 @@ type Config struct {
 	// ChatIds specifies the receivers of notifications.
 	ChatIds []int64 `yaml:"chat_ids" json:"chat_ids"`
 
+	// ChatIdsEnvVar specifies the name of the environment variable
+	// that contains comma-separated ChatIds for current telegram notifier.
 	ChatIdsEnvVar string `yaml:"chat_ids_env_var" json:"chat_ids_env_var"`
 
 	// Fields required for integration with `igulib/app_logger`
 
 	// LogLevels define the log levels the messages must have to be send to Telegram
 	// when integrated with `igulib/app_logger`.
-	// If none specified, no messages will be sent to Telegram.
+	// If none specified, no messages will be sent via Telegram.
 	LogLevels []string `yaml:"log_levels" json:"log_levels"`
 
-	// WithKeys defines the keys that a log message must contain
-	// in order to be sent to Telegram (the value is arbitrary).
-	// If a message has at least one of these keys, it will be sent to Telegram.
-	// If no keys specified, all messages with specified log level
+	// LogMustHavePrefixes defines the prefixes that a log message must start with
+	// in order to be sent to Telegram.
+	// If a message starts with any of these prefixes, it will be sent via Telegram.
+	// If prefixes not specified, all messages with the appropriate log level
 	// will be sent.
-	WithKeys []string `yaml:"with_keys" json:"with_keys"`
+	// This setting only has effect for log messages from `igulib/app_logger`
+	// when integrated with it via zerolog.Hook.
+	LogMustHavePrefixes []string `yaml:"log_must_have_prefixes" json:"log_must_have_prefixes"`
 
-	// MessageCaption defines the caption of the log message
-	// when integrated with `igulib/app_logger`.
-	// Message captions are obtained in the following order:
-	// values of "caption" or "title" keys of the log message if any,
-	// value of MessageCaption configuration field, default value.
-	MessageCaption string `yaml:"message_caption" json:"message_caption"`
+	// LogDateTime enables appending date and time to the log message.
+	LogDateTime bool `yaml:"log_date_time" json:"log_date_time"`
+
+	// LogUseUTC enables UTC time instead of local if LogDateTime is true.
+	LogUseUTC bool `yaml:"log_use_utc" json:"log_use_utc"`
 }
 
 type validatedConfig struct {
-	BotToken  string
-	ChatIds   []int64
-	LogLevels []zerolog.Level
-	WithKeys  []string
+	BotToken            string
+	ChatIds             []int64
+	LogLevels           []zerolog.Level
+	LogMustHavePrefixes []string
+	LogDateTime         bool
+	LogUseUTC           bool
 }
 
 func ParseYamlConfig(data []byte) (*Config, error) {
@@ -128,9 +133,9 @@ func parseChatIds(chatIds string) ([]int64, error) {
 
 func validateConfig(c *Config) (*validatedConfig, error) {
 	v := &validatedConfig{
-		ChatIds:   make([]int64, 0),
-		LogLevels: make([]zerolog.Level, 0),
-		WithKeys:  make([]string, 0),
+		ChatIds:             make([]int64, 0),
+		LogLevels:           make([]zerolog.Level, 0),
+		LogMustHavePrefixes: make([]string, 0),
 	}
 	if c == nil {
 		return v, ErrLogTelegramConfigIsNil
@@ -150,13 +155,6 @@ func validateConfig(c *Config) (*validatedConfig, error) {
 	} else {
 		v.BotToken = botToken
 	}
-
-	// ChatIds (env var has precedence)
-
-	// if len(c.ChatIds) == 0 {
-	// 	return v, ErrBadTelegramChatId
-	// }
-	// v.ChatIds = append(v.ChatIds, c.ChatIds...)
 
 	var chatIds string
 	if c.BotTokenEnvVar != "" {
@@ -187,22 +185,22 @@ func validateConfig(c *Config) (*validatedConfig, error) {
 		v.LogLevels = append(v.LogLevels, parsedLevel)
 	}
 
-	v.WithKeys = append(v.WithKeys, c.WithKeys...)
+	v.LogMustHavePrefixes = append(v.LogMustHavePrefixes, c.LogMustHavePrefixes...)
 
 	// Fields that do not require validation
-	// none
-
-	fmt.Printf("*** VALIDATED CONFIG: %+v\n", v)
+	v.LogDateTime = c.LogDateTime
+	v.LogUseUTC = c.LogUseUTC
 
 	return v, nil
 }
 
 type TelegramMessage struct {
-	Caption string
-	Text    string
+	Title string
+	Text  string
 }
 
-// TelegramNotifier.
+// TelegramNotifier unit. Do not instantiate TelegramNotifier directly,
+// use NewTelegramNotifier instead.
 type TelegramNotifier struct {
 	unitRunner *app.UnitLifecycleRunner
 
@@ -212,16 +210,18 @@ type TelegramNotifier struct {
 	config *validatedConfig
 
 	// Telegram service
-	tgServiceRunning     atomic.Bool
-	tgRequestCounter     sync.WaitGroup
-	tgMsgChan            chan TelegramMessage
-	tgServiceQuitRequest chan struct{}
-	tgServiceDone        chan struct{}
+	logMessageTitleSuffix string
+	tgServiceRunning      atomic.Bool
+	tgRequestCounter      sync.WaitGroup
+	tgMsgChan             chan TelegramMessage
+	tgServiceQuitRequest  chan struct{}
+	tgServiceDone         chan struct{}
 }
 
 // NewTelegramNotifier creates a new telegram_notifier instance and
 // adds it into the default app unit manager (app.M).
 // The unit's name is 'telegram_notifier'.
+// This function should be used instead of direct construction of TelegramNotifier.
 func NewTelegramNotifier(unitName string, config *Config) (*TelegramNotifier, error) {
 
 	u := &TelegramNotifier{
@@ -252,6 +252,15 @@ func (u *TelegramNotifier) init(c *Config) error {
 	return nil
 }
 
+// SetLogMessageTitleSuffix sets an optional suffix to
+// the log message title when log messages are forwarded from `igulib/app_logger`.
+// This method has no effect if current `TelegramNotifier` not used as a hook
+// at `igulib/app_logger`.
+// Message title example without suffix: `ERROR`, with suffix: `ERROR | my-suffix`.
+func (u *TelegramNotifier) SetLogMessageTitleSuffix(appName string) {
+	u.logMessageTitleSuffix = appName
+}
+
 // Run implements zerolog.Hook.
 func (u *TelegramNotifier) Run(
 	e *zerolog.Event,
@@ -267,22 +276,71 @@ func (u *TelegramNotifier) Run(
 		}
 	}
 
-	if levelOk {
-		// TODO: check keys
+	if !levelOk {
+		return
+	}
 
-		err := u.Send("Log message", message)
-		if err != nil {
-			log.Error().Err(err).Msgf("(%s) failed to send message", u.unitRunner.Name())
+	// Check message prefix
+	if len(u.config.LogMustHavePrefixes) > 0 {
+		prefixFound := false
+		for _, p := range u.config.LogMustHavePrefixes {
+			if strings.HasPrefix(message, p) {
+				prefixFound = true
+				break
+			}
+		}
+		if !prefixFound {
+			return
 		}
 	}
+
+	var title string
+	switch level {
+	case zerolog.NoLevel:
+		title = "LOG MESSAGE"
+	case zerolog.TraceLevel:
+		title = "TRACE"
+	case zerolog.DebugLevel:
+		title = "DEBUG"
+	case zerolog.InfoLevel:
+		title = "INFO"
+	case zerolog.WarnLevel:
+		title = "WARNING"
+	case zerolog.ErrorLevel:
+		title = "ERROR"
+	case zerolog.FatalLevel:
+		title = "FATAL"
+	case zerolog.PanicLevel:
+		title = "PANIC"
+	}
+	if u.logMessageTitleSuffix != "" {
+		title = fmt.Sprintf("%s | %s", title, u.logMessageTitleSuffix)
+	}
+
+	if u.config.LogDateTime {
+		if u.config.LogUseUTC {
+			message = fmt.Sprintf("%s | %s", message, time.Now().UTC().Format(time.RFC3339))
+		} else {
+			message = fmt.Sprintf("%s | %s", message, time.Now().Format(time.RFC3339))
+		}
+
+	}
+
+	err := u.Send(title, message)
+	if err != nil {
+		// Do not use logger here to prevent positive feedback
+		fmt.Fprintf(os.Stderr, "(%s) failed to send message", u.unitRunner.Name())
+	}
+
 }
 
-func (u *TelegramNotifier) Send(caption, text string) error {
+// Send asynchronously sends the message via Telegram, it is thread-safe.
+func (u *TelegramNotifier) Send(title, text string) error {
 
 	u.availabilityLock.Lock()
 	if u.availability == app.UAvailable {
 		u.tgRequestCounter.Add(1)
-		u.tgMsgChan <- TelegramMessage{caption, text}
+		u.tgMsgChan <- TelegramMessage{title, text}
 		u.availabilityLock.Unlock()
 		return nil
 	}
@@ -389,9 +447,10 @@ func (u *TelegramNotifier) telegramService() {
 
 				defer cancel()
 
-				err = notifier.Send(ctx, msg.Caption, msg.Text)
+				err = notifier.Send(ctx, msg.Title, msg.Text)
 				if err != nil {
-					log.Error().Err(err).Msgf("(%s) failed to send message", u.unitRunner.Name())
+					// Do not use log here to avoid positive feedback.
+					fmt.Fprintf(os.Stderr, "(%s) failed to send message", u.unitRunner.Name())
 				}
 			}()
 

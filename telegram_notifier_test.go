@@ -114,7 +114,7 @@ func TestBasicUsage(t *testing.T) {
 	r := app.M.WaitForCompletion()
 	require.Equal(t, true, r.OK, "telegram_notifier must start successfully")
 
-	err = tn.Send("IGULIB Telegram Notifier Test", fmt.Sprintf("This is a test message sent from telegram_notifier_test.go/TestBasicUsage at %s. OS is %s\n", time.Now().Format(time.RFC3339), runtime.GOOS))
+	err = tn.Send("IGULIB Telegram Notifier Test", fmt.Sprintf("This is a test message sent from telegram_notifier_test.go/TestBasicUsage at %s. OS: %q.\n", time.Now().Format(time.RFC3339), runtime.GOOS))
 	require.Equal(t, nil, err, "message must be sent successfully")
 
 	_, err = app.M.Pause(unitName)
