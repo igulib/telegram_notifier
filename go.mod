@@ -3,7 +3,7 @@ module github.com/igulib/telegram_notifier
 go 1.20
 
 require (
-	github.com/igulib/app v0.0.0-20230816100934-734f9fb65578
+	github.com/igulib/app v0.0.0-20230904163223-9f1054a1554f
 	github.com/nikoksr/notify v0.41.0
 	github.com/rs/zerolog v1.30.0
 	github.com/stretchr/testify v1.8.4

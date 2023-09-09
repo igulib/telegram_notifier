@@ -84,14 +84,14 @@ type Config struct {
 	// If none specified, no messages will be sent via Telegram.
 	LogLevels []string `yaml:"log_levels" json:"log_levels"`
 
-	// LogMustHavePrefixes defines the prefixes that a log message must start with
-	// in order to be sent to Telegram.
+	// LogOnlyWithPrefixes defines the prefixes that a log message must start with
+	// in order to be sent to Telegram chats.
 	// If a message starts with any of these prefixes, it will be sent via Telegram.
 	// If prefixes not specified, all messages with the appropriate log level
 	// will be sent.
 	// This setting only has effect for log messages from `igulib/app_logger`
 	// when integrated with it via zerolog.Hook.
-	LogMustHavePrefixes []string `yaml:"log_must_have_prefixes" json:"log_must_have_prefixes"`
+	LogOnlyWithPrefixes []string `yaml:"log_only_with_prefixes" json:"log_only_with_prefixes"`
 
 	// LogDateTime enables appending date and time to the log message.
 	LogDateTime bool `yaml:"log_date_time" json:"log_date_time"`
@@ -185,7 +185,7 @@ func validateConfig(c *Config) (*validatedConfig, error) {
 		v.LogLevels = append(v.LogLevels, parsedLevel)
 	}
 
-	v.LogMustHavePrefixes = append(v.LogMustHavePrefixes, c.LogMustHavePrefixes...)
+	v.LogMustHavePrefixes = append(v.LogMustHavePrefixes, c.LogOnlyWithPrefixes...)
 
 	// Fields that do not require validation
 	v.LogDateTime = c.LogDateTime
@@ -200,7 +200,7 @@ type TelegramMessage struct {
 }
 
 // TelegramNotifier unit. Do not instantiate TelegramNotifier directly,
-// use NewTelegramNotifier instead.
+// use the New function instead.
 type TelegramNotifier struct {
 	unitRunner *app.UnitLifecycleRunner
 
@@ -218,11 +218,9 @@ type TelegramNotifier struct {
 	tgServiceDone         chan struct{}
 }
 
-// NewTelegramNotifier creates a new telegram_notifier instance and
-// adds it into the default app unit manager (app.M).
-// The unit's name is 'telegram_notifier'.
+// New creates a new TelegramNotifier unit.
 // This function should be used instead of direct construction of TelegramNotifier.
-func NewTelegramNotifier(unitName string, config *Config) (*TelegramNotifier, error) {
+func New(unitName string, c *Config) (*TelegramNotifier, error) {
 
 	u := &TelegramNotifier{
 		unitRunner: app.NewUnitLifecycleRunner(unitName),
@@ -230,12 +228,23 @@ func NewTelegramNotifier(unitName string, config *Config) (*TelegramNotifier, er
 
 	u.unitRunner.SetOwner(u)
 
-	err := u.init(config)
+	err := u.init(c)
 	if err != nil {
 		return u, err
 	}
 
 	return u, nil
+}
+
+// AddNew creates a new TelegramNotifier unit and
+// adds it into the default app unit manager (app.M).
+// This function should be used instead of direct construction of TelegramNotifier.
+func AddNew(unitName string, c *Config) (*TelegramNotifier, error) {
+	u, err := New(unitName, c)
+	if err != nil {
+		return u, err
+	}
+	return u, app.M.AddUnit(u)
 }
 
 func (u *TelegramNotifier) init(c *Config) error {
@@ -326,7 +335,7 @@ func (u *TelegramNotifier) Run(
 
 	}
 
-	err := u.Send(title, message)
+	err := u.SendAsync(title, message)
 	if err != nil {
 		// Do not use logger here to prevent positive feedback
 		fmt.Fprintf(os.Stderr, "(%s) failed to send message", u.unitRunner.Name())
@@ -334,8 +343,8 @@ func (u *TelegramNotifier) Run(
 
 }
 
-// Send asynchronously sends the message via Telegram, it is thread-safe.
-func (u *TelegramNotifier) Send(title, text string) error {
+// SendAsync asynchronously sends the message via Telegram, it is thread-safe.
+func (u *TelegramNotifier) SendAsync(title, text string) error {
 
 	u.availabilityLock.Lock()
 	if u.availability == app.UAvailable {

@@ -96,14 +96,14 @@ func teardown(m *testing.M) {
 
 func TestBasicUsage(t *testing.T) {
 
-	configBytes, err := os.ReadFile("./_test_data/TestBasicUsage.yaml")
+	configBytes, err := os.ReadFile("./test_data/TestBasicUsage.yaml")
 	require.Equal(t, nil, err)
 
 	config, err := ParseYamlConfig([]byte(configBytes))
 	require.Equal(t, nil, err)
 
 	unitName := "telegram_notifier"
-	tn, err := NewTelegramNotifier(unitName, config)
+	tn, err := New(unitName, config)
 	require.Equal(t, nil, err, "telegram_notifier must be created successfully")
 
 	err = app.M.AddUnit(tn)
@@ -111,20 +111,13 @@ func TestBasicUsage(t *testing.T) {
 
 	_, err = app.M.Start(unitName)
 	require.Equal(t, nil, err, "telegram_notifier must start successfully")
-	r := app.M.WaitForCompletion()
-	require.Equal(t, true, r.OK, "telegram_notifier must start successfully")
 
-	err = tn.Send("IGULIB Telegram Notifier Test", fmt.Sprintf("This is a test message sent from telegram_notifier_test.go/TestBasicUsage at %s. OS: %q.\n", time.Now().Format(time.RFC3339), runtime.GOOS))
+	err = tn.SendAsync("IGULIB Telegram Notifier Test", fmt.Sprintf("This is a test message sent from telegram_notifier_test.go/TestBasicUsage at %s. OS: %q.\n", time.Now().Format(time.RFC3339), runtime.GOOS))
 	require.Equal(t, nil, err, "message must be sent successfully")
 
 	_, err = app.M.Pause(unitName)
 	require.Equal(t, nil, err, "telegram_notifier must pause successfully")
-	r = app.M.WaitForCompletion()
-	require.Equal(t, true, r.OK, "telegram_notifier must pause successfully")
 
 	_, err = app.M.Quit(unitName)
 	require.Equal(t, nil, err, "telegram_notifier must quit successfully")
-	r = app.M.WaitForCompletion()
-	require.Equal(t, true, r.OK, "telegram_notifier must quit successfully")
-
 }
